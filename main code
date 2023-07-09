@@ -1,0 +1,252 @@
+
+library(DPTSDCDT)
+
+###DGP
+dgp_1th = function(t,n){
+  rho1=0.3
+  rho2=-0.3
+  la1=-0.6
+  la2=0.3
+  a1=0.3
+  a2=-0.3
+  
+  b11 = 1
+  b12 = 1
+  b21 = 2
+  b22 = 2
+  
+  gamm = c(0.2,0.5)
+  
+  t = t+1
+  
+  # generate data
+  tt = t
+  nt = n*tt
+  t=tt
+  ###############################################
+  w = matrix(0,n,n)
+  for (i in 1:n) {
+    for (j in 1:n) {
+      if(i<j & i> (j-4)) {w[i,j]=1}
+      else {w[i,j]=0}
+      
+      if (i>j) {w[i,j]=w[j,i]}
+    }
+  }
+  
+  ws = rowSums(w)
+  w = w/ws
+  ##############################################
+  ai = rnorm(n,1)  # fixed effect
+  thresh <- rnorm(nt,sd=2)
+  q = thresh
+  s =rnorm(nt)
+  rt =gamm[1]+gamm[2]*s
+  d = (thresh <= rt)
+  d2 = 1-d
+  
+  x <- matrix(NA,tt,n)
+  for (j in 1:n) {
+    x[,j] = rnorm(tt,sd=9)+0.25*ai[j]
+  }
+  x = as.vector(x)
+  
+  x1 <- x*d
+  x2 <- x*d2
+  
+  h <- kronecker(w,diag(tt))
+  wx <- h%*%x
+  e <- 0.5*rnorm(nt,0)
+  #y1m = 3*x+2*wx+e
+  
+  y1m = b11*x1 + b12*h%*%x*d+e*d
+  y2m = b21*x2 + b22*h%*%x*d2+e*d2
+  
+  
+  #y1 = solve(diag(nt)-0.5*h)%*%y1m*d
+  #y2 = solve(diag(nt)-0.5*h)%*%y2m*d2
+  
+  #yold = solve(diag(nt)-0.5*h*d-0.2*h*d2)%*%(y1m+y2m)
+  dm = matrix(d,t,n)
+  d2m <- matrix(d2,tt,n)
+  
+  y3m = matrix(y1m,t,n)
+  y4m = matrix(y2m,t,n)
+  
+  
+  y <- matrix(NA,t,n)
+  y[1,] = rnorm(n)
+  for (j in 2:t) {
+    #dm <- matrix(d,tt,n)
+    y1_1 <- y[(j-1),]*dm[j,]
+    y2_1 <- y[(j-1),]*d2m[j,]
+    wy1_1 <- w%*%y[(j-1),]*dm[j,]
+    wy2_1 <- w%*%y[(j-1),]*d2m[j,]
+    dj = dm[j,]
+    dj = as.vector(dj)
+    dd = diag(dj,n)
+    dd2 =diag(n)-dd
+    
+    dj = d2m[j,]
+    dj = as.vector(dj)
+    dd2 = diag(dj,n)
+    y[j,] = solve(diag(n)-a1*dd%*%w-a2*dd2%*%w)%*%(rho1*y1_1+rho2*y2_1+la1*wy1_1+la2*wy2_1 + y3m[j,]+y4m[j,]+1*ai)
+  }
+  
+  ym = y
+  
+  y = as.vector(ym)
+  return(list(y=y,x=x,q=q,s=s,w=w,t=t,n=n))  
+}
+###
+
+##tools
+sdm <- function(mt){
+  sds <- sqrt((colSums(t((t(mt) - colMeans(mt))^2)))/(nrow(mt)-1))
+  return(sds)
+}
+##
+
+library(SparseM)
+library(doSNOW)
+library(foreach)
+#install.packages('doParallel')
+#install.packages('iterators')
+#install.packages('parallel')
+library(iterators)
+library(parallel)
+library(doParallel)
+
+xc= detectCores()
+Btimes <- 1000
+pb <- txtProgressBar(min=1, max=Btimes, style=3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress=progress)
+
+
+
+cl <- makeSOCKcluster(xc)
+#clusterEvalQ(cl, .libPaths("~/qrnn"))
+registerDoSNOW(cl)
+time1 <- Sys.time()
+
+result1 <- foreach(i=1:Btimes, .packages = c('purrr','SparseM','Rcpp',"DPTSDCDT","BayesianTools"), .options.snow=opts,
+                   .combine='rbind',.errorhandling = "pass") %dopar% {
+                     dcdt1 <- dgp_1th(5,25)
+                     mcdt1 <- dptsd_cdts(y=dcdt1$y,x=as.matrix(dcdt1$x),z=NULL,q=dcdt1$q,s=as.matrix(dcdt1$s),w=dcdt1$w,tt=dcdt1$t,n=dcdt1$n,ms=1000,burnin=1000,Th=1)####x 和s必须为矩阵
+                    
+                     
+                     return(c(mcdt1$gammahat,mcdt1$slope))
+                   }
+Sys.time() - time1
+close(pb)
+stopCluster(cl)
+
+nrow(result1)
+round(colMeans(result1),3)
+round(sdm(result1),3)
+
+cl <- makeSOCKcluster(xc)
+#clusterEvalQ(cl, .libPaths("~/qrnn"))
+registerDoSNOW(cl)
+time1 <- Sys.time()
+
+result2 <- foreach(i=1:Btimes, .packages = c('purrr','SparseM','Rcpp',"DPTSDCDT","BayesianTools"), .options.snow=opts,
+                   .combine='rbind',.errorhandling = "pass") %dopar% {
+                     dcdt1 <- dgp_1th(5,50)
+                     mcdt1 <- dptsd_cdts(y=dcdt1$y,x=as.matrix(dcdt1$x),z=NULL,q=dcdt1$q,s=as.matrix(dcdt1$s),w=dcdt1$w,tt=dcdt1$t,n=dcdt1$n,ms=1000,burnin=1000,Th=1)####x 和s必须为矩阵
+                     
+                     
+                     return(c(mcdt1$gammahat,mcdt1$slope))
+                   }
+Sys.time() - time1
+close(pb)
+stopCluster(cl)
+
+
+nrow(result2)
+round(colMeans(result2),3)
+
+cl <- makeSOCKcluster(xc)
+#clusterEvalQ(cl, .libPaths("~/qrnn"))
+registerDoSNOW(cl)
+time1 <- Sys.time()
+
+result3 <- foreach(i=1:Btimes, .packages = c('purrr','SparseM','Rcpp',"DPTSDCDT","BayesianTools"), .options.snow=opts,
+                   .combine='rbind',.errorhandling = "pass") %dopar% {
+                     dcdt1 <- dgp_1th(5,100)
+                     mcdt1 <- dptsd_cdts(y=dcdt1$y,x=as.matrix(dcdt1$x),z=NULL,q=dcdt1$q,s=as.matrix(dcdt1$s),w=dcdt1$w,tt=dcdt1$t,n=dcdt1$n,ms=1000,burnin=1000,Th=1)####x 和s必须为矩阵
+                     
+                     
+                     return(c(mcdt1$gammahat,mcdt1$slope))
+                   }
+Sys.time() - time1
+close(pb)
+stopCluster(cl)
+
+
+nrow(result3)
+round(colMeans(result3),3)
+
+cl <- makeSOCKcluster(xc)
+#clusterEvalQ(cl, .libPaths("~/qrnn"))
+registerDoSNOW(cl)
+time1 <- Sys.time()
+
+result4 <- foreach(i=1:Btimes, .packages = c('purrr','SparseM','Rcpp',"DPTSDCDT","BayesianTools"), .options.snow=opts,
+                   .combine='rbind',.errorhandling = "pass") %dopar% {
+                     dcdt1 <- dgp_1th(10,25)
+                     mcdt1 <- dptsd_cdts(y=dcdt1$y,x=as.matrix(dcdt1$x),z=NULL,q=dcdt1$q,s=as.matrix(dcdt1$s),w=dcdt1$w,tt=dcdt1$t,n=dcdt1$n,ms=1000,burnin=1000,Th=1)####x 和s必须为矩阵
+                     
+                     
+                     return(c(mcdt1$gammahat,mcdt1$slope))
+                   }
+Sys.time() - time1
+close(pb)
+stopCluster(cl)
+
+
+nrow(result4)
+round(colMeans(result4),3)
+
+cl <- makeSOCKcluster(xc)
+#clusterEvalQ(cl, .libPaths("~/qrnn"))
+registerDoSNOW(cl)
+time1 <- Sys.time()
+
+result5 <- foreach(i=1:Btimes, .packages = c('purrr','SparseM','Rcpp',"DPTSDCDT","BayesianTools"), .options.snow=opts,
+                   .combine='rbind',.errorhandling = "pass") %dopar% {
+                     dcdt1 <- dgp_1th(10,50)
+                     mcdt1 <- dptsd_cdts(y=dcdt1$y,x=as.matrix(dcdt1$x),z=NULL,q=dcdt1$q,s=as.matrix(dcdt1$s),w=dcdt1$w,tt=dcdt1$t,n=dcdt1$n,ms=1000,burnin=1000,Th=1)####x 和s必须为矩阵
+                     
+                     
+                     return(c(mcdt1$gammahat,mcdt1$slope))
+                   }
+Sys.time() - time1
+close(pb)
+stopCluster(cl)
+
+
+nrow(result5)
+round(colMeans(result5),3)
+
+cl <- makeSOCKcluster(xc)
+#clusterEvalQ(cl, .libPaths("~/qrnn"))
+registerDoSNOW(cl)
+time1 <- Sys.time()
+
+result6 <- foreach(i=1:Btimes, .packages = c('purrr','SparseM','Rcpp',"DPTSDCDT","BayesianTools"), .options.snow=opts,
+                   .combine='rbind',.errorhandling = "pass") %dopar% {
+                     dcdt1 <- dgp_1th(10,100)
+                     mcdt1 <- dptsd_cdts(y=dcdt1$y,x=as.matrix(dcdt1$x),z=NULL,q=dcdt1$q,s=as.matrix(dcdt1$s),w=dcdt1$w,tt=dcdt1$t,n=dcdt1$n,ms=1000,burnin=1000,Th=1)####x 和s必须为矩阵
+                     
+                     
+                     return(c(mcdt1$gammahat,mcdt1$slope))
+                   }
+Sys.time() - time1
+close(pb)
+stopCluster(cl)
+
+
+nrow(result6)
+round(colMeans(result6),3)
